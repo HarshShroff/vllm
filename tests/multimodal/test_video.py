@@ -1782,3 +1782,55 @@ def test_glm5next_read_frames_dense_walk_matches_stock(tmp_path):
         assert abs(round(float(np.asarray(frame).mean())) - idx) <= 1
     # One initial seek, then pure walking -- no re-seek churn.
     assert cap.seeks == 1
+
+
+def _fake_deepstream_probe(monkeypatch: pytest.MonkeyPatch, result: tuple) -> None:
+    import types
+
+    probe_module = types.ModuleType("nvidia.deepstream_videodecode")
+    probe_module.probe_metadata = lambda data: result  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "nvidia", types.ModuleType("nvidia"))
+    monkeypatch.setitem(sys.modules, "nvidia.deepstream_videodecode", probe_module)
+
+
+def test_deepstream_rejects_unreadable_metadata(monkeypatch: pytest.MonkeyPatch):
+    # probe_metadata returns all zeros for an MP4 whose moov box is at the end
+    _fake_deepstream_probe(monkeypatch, (0, 0.0, 0.0, 0, 0, ""))
+
+    with pytest.raises(ValueError, match="could not read the video metadata"):
+        decode_video(
+            "deepstream",
+            loader_cls=Qwen3VLVideoBackend,
+            data=b"not a streamable mp4",
+            target=VideoTargetMetadata(-1, 1, 300),
+            sampling_kwargs={},
+            backend_kwargs={},
+            frame_recovery=False,
+        )
+
+
+def test_deepstream_samples_frames_when_metadata_is_readable(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from vllm.multimodal.video_decoders.deepstream import DeepStreamVideoBackendMixin
+
+    _fake_deepstream_probe(monkeypatch, (300, 30.0, 10.0, 1280, 720, "h264"))
+    monkeypatch.setattr(
+        DeepStreamVideoBackendMixin,
+        "decode_indices",
+        lambda data, frame_idx, source, **kwargs: (frame_idx, list(frame_idx)),
+    )
+
+    frames, source, frame_idx, valid = decode_video(
+        "deepstream",
+        loader_cls=Qwen3VLVideoBackend,
+        data=b"streamable mp4",
+        target=VideoTargetMetadata(-1, 1, 300),
+        sampling_kwargs={},
+        backend_kwargs={},
+        frame_recovery=False,
+    )
+
+    assert source.total_frames_num == 300
+    assert len(frame_idx) == 10
+    assert frame_idx[0] == 0 and frame_idx[-1] == 299

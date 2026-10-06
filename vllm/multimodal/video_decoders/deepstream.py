@@ -25,6 +25,13 @@ def decode_deepstream(
     from nvidia.deepstream_videodecode import probe_metadata
 
     total_frames, original_fps, duration, _width, _height, codec = probe_metadata(data)
+    if total_frames <= 0 or _width <= 0 or _height <= 0:
+        raise ValueError(
+            "DeepStream could not read the video metadata (no frames or "
+            "frame size found). The container is probably not streamable, "
+            "e.g. an MP4 with the moov box at the end of the file. Re-encode "
+            "it with `-movflags +faststart` or use another video backend."
+        )
     check_frame_pixel_limit(_width, _height)
     source = loader_cls._prepare_source(
         VideoSourceMetadata(total_frames, original_fps, duration)
